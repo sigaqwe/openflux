@@ -50,8 +50,8 @@ jobs:
           GOOS: ios
           GOARCH: arm64
           CGO_ENABLED: "1"
-          CC: ./ios-clang.sh
-          CXX: ./ios-clang++.sh
+            CC: /Users/runner/work/openflux/openflux/ios-clang.sh
+            CXX: /Users/runner/work/openflux/openflux/ios-clang++.sh
         run: |
           mkdir -p output/ios
 
