@@ -1,0 +1,185 @@
+name: Build OpenFlux iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Download Go dependencies
+        run: |
+          go mod download
+
+      - name: Prepare iOS compiler
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          CLANG="$(xcrun --sdk iphoneos --find clang)"
+
+          cat > ios-clang.sh <<EOF
+          #!/bin/bash
+          exec "$CLANG" -isysroot "$SDK" -arch arm64 -miphoneos-version-min=15.0 "\$@"
+          EOF
+
+          cat > ios-clang++.sh <<EOF
+          #!/bin/bash
+          exec "$CLANG" -isysroot "$SDK" -arch arm64 -miphoneos-version-min=15.0 "\$@"
+          EOF
+
+          chmod +x ios-clang.sh
+          chmod +x ios-clang++.sh
+
+      - name: Build OpenFlux Go library
+        env:
+          GOOS: ios
+          GOARCH: arm64
+          CGO_ENABLED: "1"
+          CC: ./ios-clang.sh
+          CXX: ./ios-clang++.sh
+        run: |
+          mkdir -p output/ios
+
+          go build \
+            -buildmode=c-archive \
+            -ldflags="-s -w" \
+            -trimpath \
+            -o output/ios/liboflux.a \
+            .
+
+          test -f output/ios/liboflux.a
+          test -f output/ios/liboflux.h
+
+      - name: Create Swift app source
+        run: |
+          test -f ios/OpenFluxApp.swift
+
+      - name: Create Objective-C bridge header
+        run: |
+          cat > ios/OpenFluxBridge.h <<'EOF'
+          #ifndef OPENFLUX_BRIDGE_H
+          #define OPENFLUX_BRIDGE_H
+
+          #include "liboflux.h"
+
+          #endif
+          EOF
+
+      - name: Compile Swift application
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          SWIFT="$(xcrun --sdk iphoneos --find swiftc)"
+
+          "$SWIFT" \
+            -sdk "$SDK" \
+            -target arm64-apple-ios15.0 \
+            -O \
+            -import-objc-header ios/OpenFluxBridge.h \
+            ios/OpenFluxApp.swift \
+            output/ios/liboflux.a \
+            -framework UIKit \
+            -framework Foundation \
+            -o OpenFlux
+
+      - name: Create application bundle
+        run: |
+          rm -rf Payload
+          mkdir -p Payload/OpenFlux.app
+
+          cp OpenFlux Payload/OpenFlux.app/OpenFlux
+
+          cat > Payload/OpenFlux.app/Info.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+
+              <key>CFBundleDisplayName</key>
+              <string>OpenFlux</string>
+
+              <key>CFBundleExecutable</key>
+              <string>OpenFlux</string>
+
+              <key>CFBundleIdentifier</key>
+              <string>com.openflux.ios</string>
+
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+
+              <key>CFBundleName</key>
+              <string>OpenFlux</string>
+
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+
+              <key>CFBundleVersion</key>
+              <string>1</string>
+
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+
+              <key>MinimumOSVersion</key>
+              <string>15.0</string>
+
+              <key>NSLocalNetworkUsageDescription</key>
+              <string>OpenFlux uses local networking for its SOCKS5 client.</string>
+
+              <key>UIRequiredDeviceCapabilities</key>
+              <array>
+                  <string>arm64</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Ad-hoc sign application
+        run: |
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            Payload/OpenFlux.app
+
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            Payload/OpenFlux.app
+
+      - name: Create IPA
+        run: |
+          /usr/bin/zip \
+            -r \
+            -q \
+            OpenFlux.ipa \
+            Payload
+
+          ls -lh OpenFlux.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: OpenFlux-iOS
+          path: OpenFlux.ipa
+          if-no-files-found: error
