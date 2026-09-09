@@ -1,0 +1,88 @@
+name: Build OpenFlux IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build iOS library
+        shell: bash
+        run: |
+          set -e
+
+          XCODE_PATH="/Applications/Xcode.app"
+          DEVELOPER_DIR="$XCODE_PATH/Contents/Developer"
+          SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+          CLANG="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+
+          mkdir -p output/ios
+
+          export GOARCH=arm64
+          export GOOS=ios
+          export CGO_ENABLED=1
+          export SDK_PATH="$SDK_PATH"
+          export CC="$CLANG -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=13.0"
+          export CXX="${CLANG}++ -isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=13.0"
+          export CGO_CFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=13.0"
+          export CGO_LDFLAGS="-isysroot $SDK_PATH -arch arm64 -miphoneos-version-min=13.0"
+
+          go build \
+            -buildmode=c-archive \
+            -ldflags="-s -w" \
+            -trimpath \
+            -o output/ios/liboflux.a \
+            .
+
+      - name: Create IPA payload
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p Payload/OpenFlux.app
+
+          cp output/ios/liboflux.a Payload/OpenFlux.app/
+
+          cat > Payload/OpenFlux.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>OpenFlux</string>
+              <key>CFBundleExecutable</key>
+              <string>OpenFlux</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.openflux.client</string>
+              <key>CFBundleName</key>
+              <string>OpenFlux</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>MinimumOSVersion</key>
+              <string>13.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+          zip -r OpenFlux.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenFlux-IPA
+          path: OpenFlux.ipa
